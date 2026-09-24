@@ -1,0 +1,22 @@
+[package]
+name = "call-md"
+version = "1.0.4"
+authors = ["VideoDB <support@videodb.io>"]
+description = "Call.md — Bend rebuild (HVM / GPU-parallel meeting intelligence)"
+bend = "0.2.34"
+hvm = "2.0.8"
+license = "MIT"
+
+[build]
+entry = "Main.bend"
+out = "call.hvm"
+
+[ffi]
+# Host-linked functions replaced at link time by the Electron bridge.
+# `bend check` uses the stubs; `bend build --ffi` links these.
+llm_call = "host:llm"
+mcp_call_tool = "host:mcp"
+io_print = "host:io"
+
+[features]
+cuda = true

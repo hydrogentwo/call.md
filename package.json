@@ -28,7 +28,12 @@
     "test": "tsx --test tests/*.test.ts",
     "lint": "eslint src",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "bend:check": "bend check bend/Main.bend || echo 'bend not installed — run: cargo install bend-lang'",
+    "bend:run": "bend run bend/Main.bend || node bend/demo.mjs",
+    "bend:cuda": "bend run-cuda bend/Main.bend",
+    "bend:build": "make -C bend hvm",
+    "bend:demo": "node bend/demo.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
