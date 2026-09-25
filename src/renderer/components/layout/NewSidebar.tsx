@@ -16,6 +16,7 @@ import { getElectronAPI } from '../../api/ipc';
 import { logoutAndClearLocalAuth } from '../../lib/logout';
 import { useCopilotStore } from '../../stores/copilot.store';
 import logoIcon from '../../../../resources/icon-color-black-bg.png';
+import { isAndroid } from '../../lib/platform';
 
 type Tab = 'home' | 'history' | 'settings';
 
@@ -169,6 +170,37 @@ export function NewSidebar({ activeTab, onTabChange }: NewSidebarProps) {
     },
     { id: 'settings', icon: (a) => <SettingsIcon active={a} />, label: 'Settings' },
   ];
+
+  const onAndroid = isAndroid();
+
+  if (onAndroid) {
+    // Android: bottom tab bar (thumb-friendly, safe-area aware)
+    return (
+      <div className="flex shrink-0 items-center justify-around bg-white border-t border-black/10 px-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] gap-1">
+        {tabs.map(({ id, icon, label }) => {
+          const active = activeTab === id;
+          return (
+            <button
+              key={id}
+              onClick={() => onTabChange(id)}
+              className={`flex flex-col items-center gap-1 py-2 px-4 rounded-[12px] transition-colors min-w-[72px] ${active ? 'bg-[#ffe9d3] text-[#ec5b16]' : 'text-[#464646] active:bg-black/5'}`}
+            >
+              <span className="shrink-0">{icon(active)}</span>
+              <span className="text-[11px] font-medium leading-none">{label}</span>
+            </button>
+          );
+        })}
+        <button
+          onClick={handleLogout}
+          className="flex flex-col items-center gap-1 py-2 px-3 rounded-[12px] text-[#464646] active:bg-black/5"
+          title="Logout"
+        >
+          <LogoutIcon />
+          <span className="text-[11px] font-medium leading-none">Logout</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-white border-r border-[rgba(0,0,0,0.1)]">

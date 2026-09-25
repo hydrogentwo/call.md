@@ -30,10 +30,25 @@ export const useConfigStore = create<ConfigState>()(
 
       setAuth: (accessToken, userName, apiKey) => {
         set({ accessToken, userName, apiKey });
-        // The main process owns credentials across restarts (encrypted at rest).
-        void window.electronAPI?.app
-          ?.saveSettings({ accessToken, userName, apiKey })
-          .catch(() => undefined);
+        // Desktop: main process owns credentials (encrypted via OS keyring).
+        // Android: Capacitor Preferences (encrypted SharedPreferences on device).
+        void (async () => {
+          try {
+            const api: any = (window as any).electronAPI;
+            if (api?.app?.saveSettings) {
+              await api.app.saveSettings({ accessToken, userName, apiKey });
+            } else {
+              // Fallback — Android / Web: persist via Preferences if available
+              const { Preferences } = await import('@capacitor/preferences').catch(() => ({ Preferences: null as any }));
+              if (Preferences) {
+                await Preferences.set({ key: 'callmd:accessToken', value: JSON.stringify(accessToken) });
+                await Preferences.set({ key: 'callmd:userName', value: JSON.stringify(userName) });
+                // On Android we *do* store apiKey in Preferences (Keystore-backed when available)
+                await Preferences.set({ key: 'callmd:apiKey', value: JSON.stringify(apiKey) });
+              }
+            }
+          } catch {}
+        })();
       },
 
       setConfig: (config) => {
@@ -43,22 +58,53 @@ export const useConfigStore = create<ConfigState>()(
       /**
        * Loads settings the renderer does not persist itself - the API key lives
        * only in the main process - and the saved transcription language.
+       * On Android, Preferences is the source of truth.
        */
       hydrateFromMain: async () => {
         try {
-          const settings = await window.electronAPI?.app?.getSettings();
-          if (!settings) return;
-
-          set((state) => ({
-            apiKey: settings.apiKey ?? state.apiKey,
-            apiUrl: settings.apiUrl ?? state.apiUrl,
-            userName: settings.userName ?? null,
-            accessToken: settings.accessToken ?? null,
-            onboardingComplete: Boolean(settings.accessToken) && state.onboardingComplete,
-            transcriptionLanguage: settings.transcriptionLanguage || AUTO_LANGUAGE,
-          }));
+          const api: any = (window as any).electronAPI;
+          if (api?.app?.getSettings) {
+            const settings = await api.app.getSettings();
+            if (settings) {
+              set((state) => ({
+                apiKey: settings.apiKey ?? state.apiKey,
+                apiUrl: (settings as any).apiUrl ?? state.apiUrl,
+                userName: (settings as any).userName ?? null,
+                accessToken: (settings as any).accessToken ?? null,
+                onboardingComplete: Boolean((settings as any).accessToken) && state.onboardingComplete,
+                transcriptionLanguage: (settings as any).transcriptionLanguage || AUTO_LANGUAGE,
+              }));
+              return;
+            }
+          }
         } catch {
-          // Settings are optional; the app still works without them.
+          // fall through to Preferences
+        }
+        // Android / Web fallback — Preferences
+        try {
+          const { Preferences } = await import('@capacitor/preferences').catch(() => ({ Preferences: null as any }));
+          if (!Preferences) return;
+          const get = async (k: string) => {
+            const { value } = await Preferences.get({ key: k });
+            return value ? (JSON.parse(value) as string) : null;
+          };
+          const [accessToken, userName, apiKey, transcriptionLanguage] = await Promise.all([
+            get('callmd:accessToken'),
+            get('callmd:userName'),
+            get('callmd:apiKey'),
+            get('callmd:transcriptionLanguage'),
+          ]);
+          if (accessToken || userName || apiKey) {
+            set((s) => ({
+              accessToken: accessToken ?? s.accessToken,
+              userName: userName ?? s.userName,
+              apiKey: apiKey ?? s.apiKey,
+              transcriptionLanguage: transcriptionLanguage || s.transcriptionLanguage,
+              onboardingComplete: Boolean(accessToken) && s.onboardingComplete,
+            }));
+          }
+        } catch {
+          // Settings are optional
         }
       },
 

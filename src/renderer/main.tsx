@@ -5,6 +5,32 @@ import { trpc, createTrpcClient, getApiPort } from './api/trpc';
 import { useConfigStore } from './stores/config.store';
 import { App } from './App';
 import './styles/globals.css';
+import { isAndroid } from './lib/platform';
+import { installAndroidBridge } from './lib/android-bridge';
+
+// On Android (Capacitor WebView) there is no Electron main — install the shim
+// before React mounts so hooks like usePermissions / useConfigStore see it.
+installAndroidBridge();
+
+// Capacitor StatusBar / SplashScreen — no-ops on desktop, nice on Android
+async function initCapacitorPlugins(): Promise<void> {
+  if (!isAndroid()) return;
+  try {
+    const { StatusBar, Style } = await import('@capacitor/status-bar');
+    await StatusBar.setOverlaysWebView({ overlay: true });
+    await StatusBar.setStyle({ style: Style.Dark });
+    const { SplashScreen } = await import('@capacitor/splash-screen');
+    await SplashScreen.hide();
+    const { App: CapApp } = await import('@capacitor/app');
+    CapApp.addListener('backButton', ({ canGoBack }) => {
+      if (!canGoBack) CapApp.exitApp();
+      else window.history.back();
+    });
+  } catch {
+    // plugins not installed yet (web dev) — ignore
+  }
+}
+void initCapacitorPlugins();
 
 function TrpcProvider({ children, port }: { children: React.ReactNode; port: number }) {
   const configStore = useConfigStore();
