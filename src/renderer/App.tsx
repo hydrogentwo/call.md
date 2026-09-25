@@ -38,6 +38,7 @@ import { CalendarSetupView } from './components/auth/CalendarSetupView';
 import { RecordingPreferencesView } from './components/auth/RecordingPreferencesView';
 import { RecordingHeader, MetricsBar, LiveAssistPanel, MeetingAgendaPanel } from './components/recording';
 import { useNotificationPermission } from './hooks/useNotificationPermission';
+import { isAndroid } from './lib/platform';
 
 type Tab = 'home' | 'history' | 'settings';
 
@@ -579,105 +580,66 @@ export function App() {
 
   const isAuthenticated = configStore.isAuthenticated();
 
-  // Listen for calendar notification events
+  // Listen for calendar notification events — Electron only (Android has no tray/ICS polling)
   React.useEffect(() => {
     if (!isAuthenticated) return;
+    if (isAndroid()) return;
+
+    const calOn: any = (window as any).electronAPI?.calendarOn;
+    const cal: any = (window as any).electronAPI?.calendar;
+    if (!calOn) return;
 
     // Handle "open meeting setup" from notification/tray click
-    const unsubOpenSetup = window.electronAPI.calendarOn.onOpenMeetingSetup((meeting) => {
-      // Clear all stale state and pre-fill meeting info
+    const unsubOpenSetup = calOn.onOpenMeetingSetup?.((meeting: any) => {
       prepareNewSessionWithInfo(meeting.summary, meeting.description || '');
-
-      // Switch to home tab and show meeting setup
       setActiveTab('home');
       setShowMeetingSetup(true);
-    });
+    }) ?? (() => {});
 
     // Handle "auto-start recording" from notification or default_record behavior
-    const unsubAutoStart = window.electronAPI.calendarOn.onAutoStartRecording(async (meeting) => {
-      // Clear ALL stale state (including old call summaries) before starting new recording
+    const unsubAutoStart = calOn.onAutoStartRecording?.(async (meeting: any) => {
       prepareNewSessionWithInfo(meeting.summary, meeting.description || '');
-
-      // Ensure we're on home tab
       setActiveTab('home');
-
-      // Notify main process about which meeting we're recording (for overlapping detection)
-      await window.electronAPI.calendar.setRecordingMeeting(meeting.id);
-
-      // Start recording directly with meeting data
-      await startRecording({
-        name: meeting.summary,
-        description: meeting.description || '',
-        questions: [],
-        checklist: [],
-      });
-    });
+      await cal?.setRecordingMeeting?.(meeting.id);
+      await startRecording({ name: meeting.summary, description: meeting.description || '', questions: [], checklist: [] });
+    }) ?? (() => {});
 
     // Handle overlapping meeting notification
-    const unsubOverlap = window.electronAPI.calendarOn.onOverlappingMeeting((data) => {
-      // Store the overlap data for handling
+    const unsubOverlap = calOn.onOverlappingMeeting?.((data: any) => {
       setPendingOverlap({
-        currentMeeting: data.currentMeeting ? {
-          id: data.currentMeeting.id,
-          summary: data.currentMeeting.summary,
-        } : undefined,
-        nextMeeting: {
-          id: data.nextMeeting.id,
-          summary: data.nextMeeting.summary,
-          description: data.nextMeeting.description,
-        },
+        currentMeeting: data.currentMeeting ? { id: data.currentMeeting.id, summary: data.currentMeeting.summary } : undefined,
+        nextMeeting: { id: data.nextMeeting.id, summary: data.nextMeeting.summary, description: data.nextMeeting.description },
       });
-    });
+    }) ?? (() => {});
 
     return () => {
-      unsubOpenSetup();
-      unsubAutoStart();
-      unsubOverlap();
+      try { unsubOpenSetup(); } catch {}
+      try { unsubAutoStart(); } catch {}
+      try { unsubOverlap(); } catch {}
     };
   }, [isAuthenticated, startRecording, prepareNewSessionWithInfo]);
 
-  // Handle pending overlap action (stop current, start next)
+  // Handle pending overlap action (stop current, start next) — desktop only
   React.useEffect(() => {
     const handleOverlap = async () => {
       if (!pendingOverlap) return;
-
       const { nextMeeting } = pendingOverlap;
-
-      // Stop current recording
       await stopRecording();
-
-      // Clear the current recording meeting
-      await window.electronAPI.calendar.setRecordingMeeting(null);
-
-      // Wait for session to properly reach idle state (no arbitrary timeout)
+      await (window as any).electronAPI?.calendar?.setRecordingMeeting?.(null);
       await waitForIdle();
-
-      // Clear all stale state before starting next meeting
       prepareNewSessionWithInfo(nextMeeting.summary, nextMeeting.description || '');
-
-      // Notify main process about new meeting we're recording
-      await window.electronAPI.calendar.setRecordingMeeting(nextMeeting.id);
-
-      // Start recording with next meeting
-      await startRecording({
-        name: nextMeeting.summary,
-        description: nextMeeting.description || '',
-        questions: [],
-        checklist: [],
-      });
-
+      await (window as any).electronAPI?.calendar?.setRecordingMeeting?.(nextMeeting.id);
+      await startRecording({ name: nextMeeting.summary, description: nextMeeting.description || '', questions: [], checklist: [] });
       setPendingOverlap(null);
     };
-
-    if (pendingOverlap) {
-      handleOverlap();
-    }
+    if (pendingOverlap) handleOverlap();
   }, [pendingOverlap, stopRecording, startRecording, waitForIdle, prepareNewSessionWithInfo]);
 
-  // Clear recording meeting when session becomes idle
+  // Clear recording meeting when session becomes idle — desktop only
   React.useEffect(() => {
+    if (isAndroid()) return;
     if (sessionStatus === 'idle') {
-      window.electronAPI.calendar.setRecordingMeeting(null);
+      (window as any).electronAPI?.calendar?.setRecordingMeeting?.(null);
     }
   }, [sessionStatus]);
 
@@ -830,29 +792,38 @@ export function App() {
     (activeTab === 'home' && (permissionsLoading || !allGranted || needsCalendarSetup || showRecordingPrefs));
 
   return (
-    <div className="flex flex-col h-screen bg-white">
-      {/* Title bar - minimal for setup flow, hidden in main app (new design has no title bar) */}
-      <div
-        className={`flex items-center shrink-0 drag-region relative ${
-          isSetupFlow
-            ? 'h-[50px] bg-[#f8f8fa] border-b border-black/10'
-            : 'h-[50px] bg-white border-b border-black/10'
-        }`}
-      >
-        {/* Space for traffic lights */}
-        <div className="absolute left-0 w-20 shrink-0" />
-      </div>
+    <div className="flex flex-col h-screen bg-white" style={isAndroid() ? { paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}>
+      {/* Title bar - hidden on Android (Capacitor handles status bar), minimal on desktop */}
+      {!isAndroid() && (
+        <div
+          className={`flex items-center shrink-0 drag-region relative ${
+            isSetupFlow ? 'h-[50px] bg-[#f8f8fa] border-b border-black/10' : 'h-[50px] bg-white border-b border-black/10'
+          }`}
+        >
+          <div className="absolute left-0 w-20 shrink-0" />
+        </div>
+      )}
 
       {/* Calendar Auth Banner (shows when calendar needs reconnection) */}
       {isAuthenticated && !isSetupFlow && <CalendarAuthBanner />}
 
-      {/* Main layout below titlebar */}
-      <div className="flex flex-1 overflow-hidden">
-        {isAuthenticated && !isSetupFlow && (
-          <NewSidebar activeTab={activeTab} onTabChange={handleTabChange} />
-        )}
-        <div className="flex-1 overflow-hidden">{renderContent()}</div>
-      </div>
+      {isAndroid() ? (
+        // Android: bottom nav, no title bar drag region
+        <>
+          <div className="flex flex-1 overflow-hidden flex-col">
+            <div className="flex-1 overflow-hidden flex flex-col">{renderContent()}</div>
+          </div>
+          {isAuthenticated && !isSetupFlow && <NewSidebar activeTab={activeTab} onTabChange={handleTabChange} />}
+        </>
+      ) : (
+        // Desktop: top title bar + left sidebar
+        <div className="flex flex-1 overflow-hidden">
+          {isAuthenticated && !isSetupFlow && (
+            <NewSidebar activeTab={activeTab} onTabChange={handleTabChange} />
+          )}
+          <div className="flex-1 overflow-hidden">{renderContent()}</div>
+        </div>
+      )}
 
       {/* Global Copilot Components */}
       {isAuthenticated && <NudgeToast position="bottom" />}

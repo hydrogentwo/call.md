@@ -11,6 +11,33 @@ export function usePermissions() {
   const [loading, setLoading] = useState(true);
 
   const checkPermissions = useCallback(async () => {
+    // Android: permissions are runtime + WebView-granted; if Capacitor is native,
+    // assume mic will be granted via the system prompt on first getUserMedia.
+    try {
+      // @ts-ignore
+      const isAndroid = typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.() && window.Capacitor.getPlatform() === 'android';
+      if (isAndroid) {
+        // Check via MediaDevices permission query if available
+        try {
+          const mic = await (navigator as any).permissions?.query?.({ name: 'microphone' as any });
+          const screen = { state: 'granted' as const }; // screen capture is per-session on Android
+          setStatus({
+            microphone: mic?.state === 'granted' || false,
+            screen: true, // not a persistent permission on Android
+            accessibility: true,
+          });
+          // also allow mic prompt to succeed — treat as granted after query
+          if (mic?.state !== 'granted') {
+            // optimistic: WebView will prompt on getUserMedia; we show CTA
+            setStatus((p) => ({ ...p }));
+          }
+        } catch {
+          setStatus({ microphone: false, screen: true, accessibility: true });
+        }
+        setLoading(false);
+        return;
+      }
+    } catch {}
     const api = getElectronAPI();
     if (!api) {
       setLoading(false);
@@ -32,6 +59,20 @@ export function usePermissions() {
   }, [checkPermissions]);
 
   const requestMicPermission = useCallback(async () => {
+    try {
+      // @ts-ignore
+      const isAndroid = typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.() && window.Capacitor.getPlatform() === 'android';
+      if (isAndroid) {
+        try {
+          const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+          s.getTracks().forEach((t) => t.stop());
+          setStatus((prev) => ({ ...prev, microphone: true }));
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    } catch {}
     const api = getElectronAPI();
     if (!api) return false;
 

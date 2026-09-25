@@ -64,6 +64,7 @@ onboarding.
 | Windows x64 | Build from source with `npm run dist:win` | Recording supported; no hosted installer yet |
 | Windows ARM64 | — | Recording not supported |
 | Linux | Build from source with `npm run dist:linux` | App features available; recording not supported |
+| **Android 8+** | `npm run android:build` → `android/app/build/outputs/apk/debug/app-debug.apk` | Supported — Capacitor WebView, MediaRecorder, Bend JS fallback (see [Android](#android)) |
 
 The VideoDB capture SDK now ships recording binaries for `darwin-arm64`,
 `darwin-x64`, and `win32-x64`. Call.md verifies that the capture executable and
@@ -129,14 +130,16 @@ Call.md turns meetings into live agent loops. It records locally, transcribes in
 ## Tech Stack
 
 - **Electron 42** - Desktop application framework
+- **Capacitor 6** - Android shell (WebView) — same `src/renderer` runs on device, `android/` is the native project
 - **TypeScript 5.8** - Full type safety across main and renderer processes
-- **React 19** - Modern UI framework with concurrent features
+- **React 19** - Modern UI framework with concurrent features (bottom tab bar on Android)
 - **Tailwind CSS + shadcn/ui** - Utility-first styling with high-quality component primitives
-- **tRPC 11** - End-to-end type-safe API layer between main and renderer
-- **Hono** - Fast HTTP server for tRPC API endpoints
-- **Drizzle ORM + SQLite** - Type-safe database operations with local storage
+- **tRPC 11** - End-to-end type-safe API layer (Hono on desktop; on-device Preferences/IndexedDB + optional `VITE_ANDROID_API_URL` proxy on Android)
+- **Hono** - Fast HTTP server for tRPC API endpoints (desktop)
+- **Drizzle ORM + SQLite** - Desktop storage; Android uses `Capacitor Preferences` + `IndexedDB` (`src/renderer/lib/android-storage.ts`)
 - **Zustand** - Lightweight state management
-- **VideoDB SDK** (0.3.0) - Screen recording, transcription, and video processing
+- **VideoDB SDK** (0.3.0) - Screen recording, transcription, and video processing (desktop binary; Android `MediaRecorder` in `src/mobile/capture-android.ts`)
+- **Bend 0.2** — Parallel intelligence core (`bend/*.bend` → HVM2; JS fallback on Android via `bend-bridge.service.ts`)
 - **MCP SDK** (1.0.0) - Model Context Protocol for tool integrations
 - **OpenAI SDK** (6.19.0) - LLM calls via VideoDB's OpenAI-compatible API
 - **Vite** - Fast frontend bundling and hot module replacement
@@ -196,7 +199,10 @@ The app will transcribe in real-time, show live assists, and generate a summary 
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Start development mode (main + renderer with hot reload) |
+| `npm run dev:android` | Start Vite dev server for Android (`--host 0.0.0.0`) |
 | `npm run build` | Build TypeScript and React for production |
+| `npm run build:renderer` | Build renderer (desktop, includes widget.html) |
+| `npm run build:renderer:android` | Build renderer for Capacitor (CAPACITOR=1, single entry) |
 | `npm run dist:mac` | Build macOS distributable DMG |
 | `npm run dist:win` | Build Windows x64 NSIS installer with recording support |
 | `npm run dist:linux` | Build Linux AppImage (recording unavailable, see below) |
@@ -206,6 +212,12 @@ The app will transcribe in real-time, show live assists, and generate a summary 
 | `npm run rebuild` | Rebuild native modules for Electron |
 | `npm run db:generate` | Generate database migration files |
 | `npm run db:migrate` | Apply database migrations |
+| `npm run bend:check` / `bend:demo` | Typecheck / demo the Bend parallel core |
+| `npm run android` | Build renderer + `cap sync android` |
+| `npm run android:open` | Open `android/` in Android Studio |
+| `npm run android:build` | Assemble debug APK (`android/app/build/outputs/apk/debug/app-debug.apk`) |
+| `npm run android:build:release` | Assemble release APK (needs keystore) |
+| `npm run cap:sync` | Copy web assets + update Capacitor plugins |
 
 ### Building for other platforms
 
@@ -236,6 +248,30 @@ macOS releases also need notarization and stapling. Unsigned local builds can
 receive a different Keychain or OS-permission identity on every rebuild and are
 not representative of the installed release.
 
+## Android
+
+Call.md now runs on Android 8+ via **Capacitor**. The same React renderer (`src/renderer`) is loaded in an Android `WebView`; `android/` is the native project. See `android/README.md` for the full guide and `capacitor.config.ts`.
+
+**Prerequisites:** Android Studio + SDK 36 + JDK 17, `ANDROID_HOME` set.
+```bash
+npm ci --ignore-scripts          # install (better-sqlite3 needs --ignore-scripts on CI)
+npm run build:renderer:android   # CAPACITOR=1 vite build → dist/renderer
+npx cap copy android && npx cap sync android
+
+# open in Android Studio or build on CLI
+npm run android:open
+npm run android:build            # → android/app/build/outputs/apk/debug/app-debug.apk
+adb install android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+**Live reload:**
+```bash
+npm run dev:android              # vite --host 0.0.0.0 --port 51730
+npx cap run android --livereload --external
+```
+
+**How it works:** desktop uses `better-sqlite3` + Hono `127.0.0.1:51731`; Android uses `Capacitor Preferences` + `IndexedDB` (`src/renderer/lib/android-storage.ts`) and `MediaRecorder` (`src/mobile/capture-android.ts`). `src/renderer/lib/platform.ts` + `android-bridge.ts` shims `window.electronAPI` so no renderer component needs a fork. Bend runs as JS fallback on device (`bend-bridge.service.ts`); the parallel `bend/*.bend` sources still typecheck with `bend check bend/Main.bend`. Set `VITE_ANDROID_API_URL` to proxy tRPC to a remote server instead of the on-device mock (`src/renderer/api/android-trpc.ts`). Permissions (`RECORD_AUDIO`, `FOREGROUND_SERVICE`, `POST_NOTIFICATIONS`…) and the `RecordingService` foreground notification are in `android/app/src/main/AndroidManifest.xml`.
+
 ## MCP Server Setup
 
 Connect MCP servers in **Settings → MCP Servers**:
@@ -251,54 +287,33 @@ The MCP agent runs automatically during meetings, detects information needs from
 ### Project Structure
 
 ```
-src/
-├── main/                   # Electron Main Process
-│   ├── db/                 # Database layer (Drizzle + SQLite)
-│   ├── ipc/                # IPC handlers
-│   ├── lib/                # Utilities (logger, paths, permissions)
-│   ├── server/             # HTTP server (Hono + tRPC)
-│   │   └── trpc/           # tRPC router and procedures
-│   └── services/           # Business logic
-│       ├── copilot/        # Meeting intelligence services
-│       │   ├── context-manager.service.ts
-│       │   ├── conversation-metrics.service.ts
-│       │   ├── nudge-engine.service.ts
-│       │   ├── sales-copilot.service.ts  # Core orchestrator
-│       │   ├── summary-generator.service.ts
-│       │   └── transcript-buffer.service.ts
-│       ├── mcp/            # MCP orchestration and tool execution
-│       │   ├── connection-orchestrator.service.ts
-│       │   ├── intent-detector.service.ts
-│       │   ├── mcp-agent.service.ts
-│       │   ├── tool-aggregator.service.ts
-│       │   └── result-handler.service.ts
-│       ├── live-assist.service.ts
-│       ├── mcp-inference.service.ts
-│       ├── llm.service.ts
-│       └── videodb.service.ts
-├── preload/                # Preload scripts (IPC bridge)
-├── renderer/               # React Frontend
-│   ├── api/                # tRPC client
-│   ├── components/         # UI components
-│   │   ├── auth/           # Authentication modal
-│   │   ├── calendar/       # Calendar integration UI
-│   │   ├── copilot/        # Meeting intelligence UI
-│   │   ├── history/        # Recording history views
-│   │   ├── home/           # Home screen
-│   │   ├── icons/          # Icon components
-│   │   ├── layout/         # App layout (sidebar, titlebar)
-│   │   ├── mcp/            # MCP results/status components
-│   │   ├── meeting-setup/  # Meeting prep wizard
-│   │   ├── recording/      # Recording controls & live assist
-│   │   ├── settings/       # Settings editors
-│   │   ├── transcription/  # Live transcription panel
-│   │   └── ui/             # shadcn/ui components
-│   ├── hooks/              # Custom React hooks
-│   ├── lib/                # Utilities
-│   └── stores/             # Zustand state stores (session, copilot, mcp)
-└── shared/                 # Shared types & schemas
-    ├── schemas/            # Zod validation schemas
-    └── types/              # TypeScript types
+.
+├── android/                # Capacitor Android shell (WebView) — see android/README.md
+│   ├── app/src/main/
+│   │   ├── AndroidManifest.xml        # RECORD_AUDIO, FGS, POST_NOTIFICATIONS, OAuth deep link
+│   │   └── java/com/videodb/callmd/  # MainActivity, RecordingService, OAuthCallbackActivity
+│   └── capacitor.settings.gradle
+├── bend/                   # Bend parallel core (HVM2) — see bend/README.md
+│   ├── Main.bend, Metrics.bend, Transcript.bend, Nudge.bend, …  # 8 modules, pure fork/bend
+│   └── demo.mjs            # JS transliteration (node bend/demo.mjs)
+├── capacitor.config.ts     # appId com.videodb.callmd, webDir dist/renderer, androidScheme https
+├── src/
+│   ├── main/               # Electron Main Process (desktop)
+│   │   ├── db/             # Drizzle + better-sqlite3 (desktop) — Android uses IndexedDB fallback
+│   │   ├── ipc/            # IPC handlers (shimmed on Android via android-bridge.ts)
+│   │   ├── lib/            # capture-platform, logger, secure-store, …
+│   │   ├── server/         # Hono + tRPC (127.0.0.1:51731 on desktop; mock on Android)
+│   │   └── services/       # copilot/, mcp/, live-assist, llm, videodb, + bend-bridge.service.ts
+│   ├── mobile/             # Android capture: MediaRecorder + getDisplayMedia (src/mobile/capture-android.ts)
+│   ├── preload/            # Electron preload (contextBridge); unused on Android
+│   ├── renderer/           # React Frontend — shared desktop + Android
+│   │   ├── api/            # trpc client (desktop) + android-trpc.ts (CapacitorHttp / on-device mock)
+│   │   ├── components/     # auth, calendar, copilot, history, home, layout/NewSidebar (bottom nav on Android)
+│   │   ├── hooks/          # usePermissions (Mic via getUserMedia on Android), useSession, …
+│   │   ├── lib/            # platform.ts (isAndroid), android-bridge.ts, android-storage.ts
+│   │   └── stores/         # Zustand — config.store dual path (electronAPI vs Preferences)
+│   └── shared/             # Zod schemas + types (pure, cross-platform)
+└── resources/              # icons, wordmarks, permissions.mp4
 ```
 
 ### IPC API
